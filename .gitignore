@@ -1,0 +1,33 @@
+# Secrets & local config
+.env
+*.sa.json
+service-account*.json
+google-sa*.json
+credentials*.json
+# clasp local binding — carries the Apps Script id + the bound spreadsheet id
+.clasp.json
+
+# Runtime state
+state/
+*.db
+*.sqlite
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Browser MCP artifacts
+.playwright-mcp/
+
+# harness scheduler lock
+.claude/scheduled_tasks.lock
+
+# autopilot skill scratch (run forensics/state — never source of truth)
+.autopilot/

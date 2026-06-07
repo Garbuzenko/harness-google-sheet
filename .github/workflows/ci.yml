@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to a branch cancels the previous run for that branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install (package + dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Lint first — fast, and a failure here is unambiguous.
+      # Lint the whole repo (excludes in pyproject [tool.ruff] handle .venv/state/…)
+      # so a stray module added outside src/ or tests/ is covered too.
+      - name: Ruff lint
+        run: ruff check .
+
+      # The whole suite is offline by design: MockBackend + a fake CLAUDE_BIN.
+      # It must never reach the real Google API or the real `claude` binary, so
+      # CI needs no secrets.
+      - name: Pytest (offline)
+        env:
+          SHEET_BACKEND: mock
+        run: pytest -q

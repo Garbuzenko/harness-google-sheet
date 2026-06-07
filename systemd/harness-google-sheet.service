@@ -1,0 +1,22 @@
+[Unit]
+Description=Harness Google Sheet — autonomous agent orchestrator
+Documentation=https://github.com/Garbuzenko/harness-google-sheet
+After=network-online.target
+Wants=network-online.target
+# Never give up restarting (default would stop after 5 crashes / 10s).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/harness-google-sheet
+ExecStart=%h/projects/harness-google-sheet/.venv/bin/python -m sheet_agent run
+Restart=always
+RestartSec=5
+TimeoutStopSec=120
+KillSignal=SIGTERM
+Environment=PYTHONUNBUFFERED=1
+# Headless tools live in non-default dirs for a --user unit:
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
