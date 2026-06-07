@@ -2,89 +2,87 @@
 
 ![harness](docs/images/harness-hero.png)
 
-A **Google Sheet is the control plane** for autonomous coding agents.
+**Google-таблица как пульт управления** автономными кодинг-агентами.
 
-Each worksheet (tab) = one git repository. Each row = one human task. A robust,
-self-restarting supervisor polls the sheet, turns each task into an **OpenSpec**
-change, dispatches a short-lived `claude -p` agent to implement → test → commit →
-push → deploy, and writes the status back into the row. New rows are picked up
-continuously.
+Один лист (вкладка) = один git-репозиторий. Одна строка = одна задача от человека.
+Неубиваемый, самоперезапускающийся супервизор опрашивает таблицу, превращает каждую
+задачу в **OpenSpec**-изменение, запускает короткоживущего агента `claude -p`
+(реализовать → протестировать → закоммитить → запушить → задеплоить) и пишет статус
+обратно в строку. Новые строки подхватываются на лету.
 
-> Policy: **OpenSpec-only.** Repos without an `openspec/` directory are refused
-> (or auto-initialised, if you opt in).
+> Политика: **только OpenSpec.** Репозитории без папки `openspec/` не берутся в
+> работу (или инициализируются автоматически, если включить опцию).
 
 ```
-Google Sheet (control plane)            sheet-agent daemon (systemd, Restart=always)
-┌───────────────────────────┐  poll →   ┌─────────────────────────────────────────┐
-│ Tab = repository          │ ────────→ │ supervisor loop (never dies)              │
-│ A:Task B:Spec C:Status …  │ ← write   │  ├ resolve repo (path / git-url / name)   │
-│ row = task                │           │  ├ gate: only repos with openspec/        │
-└───────────────────────────┘           │  ├ per task: claude -p (fresh, headless)  │
-                                         │  │    openspec new change → implement → ship│
-                                         │  └ write Spec / Status / Updated / Log    │
+Google Sheet (пульт управления)         демон sheet-agent (systemd, Restart=always)
+┌───────────────────────────┐  опрос →  ┌─────────────────────────────────────────┐
+│ Вкладка = репозиторий      │ ────────→ │ цикл супервизора (никогда не падает)      │
+│ A:Задача B:Спека C:Статус …│ ← запись  │  ├ резолв репо (путь / git-url / имя)      │
+│ строка = задача            │           │  ├ гейт: только репо с openspec/           │
+└───────────────────────────┘           │  ├ на задачу: claude -p (свежий, headless) │
+                                         │  │    openspec change → реализация → ship  │
+                                         │  └ пишет Спеку / Статус / Обновлено / Лог  │
                                          └─────────────────────────────────────────┘
 ```
 
-Why a dumb supervisor + short agents (not one long agent): a 24/7 session rots
-its context and a crash loses everything. Here the supervisor is trivial and
-unkillable; each task runs in a fresh, isolated `claude -p` process with a hard
-timeout. The **sheet is the durable state**, so a restart resumes exactly where
-it left off.
+**Почему тупой супервизор + короткие агенты, а не один долгий агент:** сессия,
+живущая 24/7, гниёт по контексту, а падение теряет всё. Здесь супервизор тривиален и
+неубиваем; каждая задача исполняется в свежем изолированном процессе `claude -p` с
+жёстким таймаутом. **Таблица — это и есть durable-состояние**, поэтому после
+перезапуска работа продолжается ровно с того места, где остановилась.
 
-## Sheet layout (the daemon bootstraps this automatically)
+## Раскладка таблицы (демон создаёт её сам)
 
-| Row | A | B | C | D | E | F (hidden) |
+| Строка | A | B | C | D | E | F (скрытая) |
 |----|----|----|----|----|----|----|
-| 1 | `Репозиторий` | *path or git-url* | `Ветка` | *branch* | *heartbeat (daemon)* | |
+| 1 | `Репозиторий` | *путь или git-url* | `Ветка` | *ветка* | *heartbeat (демон)* | |
 | 2 | **Задача** | **Спека** | **Статус** | `Обновлено` | `Итог` | `Попытки` |
-| 3+ | *your task* | *(daemon)* | *(daemon)* | *(daemon)* | *(daemon)* | *(daemon, hidden)* |
+| 3+ | *ваша задача* | *(демон)* | *(демон)* | *(демон)* | *(демон)* | *(демон, скрыто)* |
 
-- **You** own column **A** (Задача) and cell **B1** (the repo binding). (There is no
-  Product Vision row, no Detail column and no Priority column — the grid is `A–F`:
-  Задача, Спека, Статус, Обновлено, Итог, Попытки. The config-row labels are Russian:
-  `A1`=`Репозиторий`, `C1`=`Ветка` — only labels, the binding/branch are still `B1`/`D1`.
-  Tasks run in sheet order; there is no priority.)
-- **The daemon** owns **B** (OpenSpec change id), **C** (Статус), **D** (Обновлено),
-  **E** (Итог), **F** (Попытки — a **hidden** column: daemon-only attempt counter for
-  dead-lettering, not human-facing), plus the heartbeat cell **E1**.
-- **Статус** flow: *(blank)* / `queued` / `retry` → `working` → `done` /
-  `failed` / `blocked`. Set a row to `retry` to re-run a failed task. The Status cell
-  is **colour-coded** by value, so state is readable at a glance.
-- **Run a skill from the sheet:** type `/<скилл>` (optionally `/<скилл> доп. контекст`)
-  into a task cell — the daemon runs that catalog skill's prompt on the tab's repo (the
-  trailing text becomes the skill's extra context). The **`_skills`** tab lists every
-  skill with its exact `Запуск` trigger string; the `▶️ Запустить скилл` menu still works
-  too.
-- **Live progress.** While a row is `working`, the **Log (E)** cell shows the
-  agent's current stage and an approximate percent plus the autonomy mode, e.g.
-  `⏳ implement ~58% (ship)`. It is derived deterministically from the agent's
-  tool calls (spec → implement → tests → commit → push → deploy), monotonic, and
-  written throttled (on stage change / ≥5-point jump / ≥20 s) so it never spends
-  meaningful Sheets quota. The final summary replaces it when the task ends.
+- **Вы** владеете колонкой **A** (Задача) и ячейкой **B1** (привязка репо). Колонок
+  Detail и Priority нет, строки Product Vision нет — сетка `A–F`: Задача, Спека,
+  Статус, Обновлено, Итог, Попытки. Задачи берутся в порядке строк, приоритета нет.
+- **Демон** владеет колонками **B** (id OpenSpec-изменения), **C** (Статус),
+  **D** (Обновлено), **E** (Итог), **F** (Попытки — **скрытая** колонка: внутренний
+  счётчик попыток демона для dead-lettering, человеку не показывается) и ячейкой
+  heartbeat **E1**.
+- **Поток Статуса:** *(пусто)* / `queued` / `retry` → `working` → `done` /
+  `failed` / `blocked`. Поставьте строке `retry`, чтобы перезапустить упавшую задачу.
+  Ячейка статуса **подкрашивается** по значению — состояние читается с одного взгляда.
+- **Запуск скилла из таблицы:** напишите `/<скилл>` (можно `/<скилл> доп. контекст`)
+  в ячейку задачи — демон выполнит промпт этого каталожного скилла на репо вкладки
+  (хвост текста идёт скиллу как доп. контекст). Вкладка **`_skills`** перечисляет все
+  скиллы с точной строкой запуска `Запуск`; меню `▶️ Запустить скилл` тоже работает.
+- **Живой прогресс.** Пока строка в `working`, ячейка **Лог (E)** показывает текущую
+  стадию агента, примерный процент и режим автономии, напр. `⏳ implement ~58% (ship)`.
+  Считается детерминированно из вызовов инструментов агента (спека → реализация →
+  тесты → коммит → пуш → деплой), монотонно, пишется throttled-но (на смене стадии /
+  скачке ≥5 пунктов / ≥20 с), чтобы не жечь квоту Sheets. В конце задачи заменяется
+  итоговой сводкой.
 
-`B1` (repo binding) may be an absolute path, a git URL (cloned on demand), or a
-bare folder name searched under `REPO_SEARCH_ROOTS`.
+Привязка **B1** может быть абсолютным путём, git-URL (клонируется по требованию) или
+просто именем папки, которое ищется внутри `REPO_SEARCH_ROOTS`.
 
-## One-time setup
+## Разовая настройка
 
-### 1. Google service account (required for the API to write)
+### 1. Сервис-аккаунт Google (нужен, чтобы API мог писать)
 
-The Sheets **API** needs an authenticated identity to write. A service account is
-the robust, non-expiring choice for an unattended daemon.
+Чтобы писать в таблицу, **API** нужна аутентифицированная личность. Для
+необслуживаемого демона надёжный, не истекающий вариант — сервис-аккаунт.
 
-**Console (≈3 min):**
-1. https://console.cloud.google.com/ → create/pick a project.
-2. APIs & Services → **Enable** the *Google Sheets API*.
-3. IAM & Admin → Service Accounts → **Create**. Name it e.g. `sheet-agent`.
-4. Open it → **Keys** → Add key → **JSON** → download.
-5. Save the JSON on this machine, e.g. `~/.config/sheet-agent-sa.json`.
+**Через консоль (≈3 мин):**
+1. https://console.cloud.google.com/ → создайте/выберите проект.
+2. APIs & Services → **включите** *Google Sheets API*.
+3. IAM & Admin → Service Accounts → **Create**. Назовите, напр. `sheet-agent`.
+4. Откройте его → **Keys** → Add key → **JSON** → скачайте.
+5. Сохраните JSON на машине, напр. `~/.config/sheet-agent-sa.json`.
 
-**You must share the sheet with the service account as Editor.** "Anyone with the
-link" defaults to *Viewer*, which lets the daemon read but **not** write — statuses
-would silently never persist. Open the sheet → **Share** → paste the `client_email`
-from the JSON (e.g. `sheet-agent@<project>.iam.gserviceaccount.com`) → **Editor**.
+**Обязательно расшарьте таблицу сервис-аккаунту как Editor.** «Доступ по ссылке» по
+умолчанию даёт *Viewer* — демон сможет читать, но **не** писать, и статусы молча
+никогда не сохранятся. Откройте таблицу → **Поделиться** → вставьте `client_email` из
+JSON (напр. `sheet-agent@<project>.iam.gserviceaccount.com`) → **Editor**.
 
-**Or via gcloud** (if installed):
+**Или через gcloud** (если установлен):
 ```bash
 gcloud iam service-accounts create sheet-agent --display-name "sheet-agent"
 gcloud services enable sheets.googleapis.com
@@ -94,150 +92,152 @@ gcloud iam service-accounts keys create ~/.config/sheet-agent-sa.json \
 
 ### 2. `.env`
 
-Create `.env` in the project root (gitignored):
+Создайте `.env` в корне проекта (он в `.gitignore`):
 
 ```dotenv
 SHEET_BACKEND=google
-SHEET_ID=your-google-sheet-id   # the long id from the sheet URL: /spreadsheets/d/<THIS>/edit
+SHEET_ID=ваш-google-sheet-id   # длинный id из URL таблицы: /spreadsheets/d/<ЭТО>/edit
 GOOGLE_SA_JSON=$HOME/.config/sheet-agent-sa.json
 
-# Agent behaviour
-AUTONOMY=ship                 # spec | code | ship | gated
-CLAUDE_MODEL=claude-opus-4-8     # most capable; used only when a task runs
-AGENT_TIMEOUT=1800            # per-task hard timeout (s)
-POLL_INTERVAL=30             # sheet poll cadence (s)
-MAX_CONCURRENT_AGENTS=2      # agents in parallel across distinct repos (1 = serial)
-MAX_ATTEMPTS=3               # dead-letter a row after N dispatches (retry/approved reset)
-RUNS_KEEP=300                # cap raw agent-output dumps under state/runs/ (0 = unbounded)
+# Поведение агента
+AUTONOMY=ship                # spec | code | ship | gated
+CLAUDE_MODEL=claude-opus-4-8  # самый мощный; используется только когда идёт задача
+AGENT_TIMEOUT=1800           # жёсткий таймаут на задачу (с)
+POLL_INTERVAL=30             # период опроса таблицы (с)
+MAX_CONCURRENT_AGENTS=2      # агентов параллельно по разным репо (1 = последовательно)
+MAX_ATTEMPTS=3               # dead-letter строки после N запусков (retry/approved сбрасывают)
+RUNS_KEEP=300                # лимит сырых дампов вывода агента в state/runs/ (0 = без лимита)
 
-# Repo resolution
+# Резолв репозиториев
 REPO_SEARCH_ROOTS=$HOME/projects
 CLONE_ROOT=$HOME/projects
-# REPO_IGNORE=legacy/*:*-archived  # colon-separated globs (matched on the repo's name
-#                                  # relative to its root) to prune неактуальные repos
-#                                  # from the ➕ Добавить репо dropdown. Survives rebuilds.
-# AUTO_OPENSPEC_INIT=false    # set true to let the agent `openspec init` missing repos
+# REPO_IGNORE=legacy/*:*-archived  # glob-маски через двоеточие (по имени репо
+#                                  # относительно корня) — спрятать неактуальные репо
+#                                  # из дропдауна ➕ Добавить репо. Переживает ребилды.
+# AUTO_OPENSPEC_INIT=false    # true — разрешить агенту `openspec init` в репо без openspec
 
-# Sharing repos with partners (friend sheets)
-# OWNER_EMAIL=you@example.com       # every minted friend file is shared back to you
-# FRIEND_DEFAULT_AUTONOMY=gated     # spec|code|ship|gated — default autonomy of a new
-#                                   # friend file (gated = partner files a task → agent
-#                                   # writes the spec + branch, you review & deploy)
+# Шаринг репо партнёрам (friend sheets)
+# OWNER_EMAIL=you@example.com       # каждый созданный friend-файл шарится обратно вам
+# FRIEND_DEFAULT_AUTONOMY=gated     # spec|code|ship|gated — автономия нового friend-файла
+#                                   # по умолчанию (gated = партнёр пишет задачу → агент
+#                                   # пишет спеку + ветку, вы ревьюите и деплоите)
 ```
 
-### 3. Install & run
+### 3. Установка и запуск
 
 ```bash
-bash deploy/install.sh                          # venv + deps + systemd unit + linger
-./.venv/bin/python -m sheet_agent doctor        # validate config + connectivity
+bash deploy/install.sh                          # venv + зависимости + systemd-юнит + linger
+./.venv/bin/python -m sheet_agent doctor        # проверка конфига + связи
 systemctl --user enable --now harness-google-sheet
-journalctl --user -u harness-google-sheet -f    # live logs
+journalctl --user -u harness-google-sheet -f    # живые логи
 ```
 
 ## CLI
 
 ```bash
-python -m sheet_agent doctor      # check config + list tabs/rows, no work done
-python -m sheet_agent bootstrap   # write the schema headers onto every tab (+ _repos/_skills)
-python -m sheet_agent repos       # (re)build the _repos reference tab + B1 dropdowns
-python -m sheet_agent skills      # create + seed the _skills catalog tab (seed-once)
-python -m sheet_agent once        # run exactly one poll cycle, then exit
-python -m sheet_agent run         # the supervisor loop (what systemd runs)
+python -m sheet_agent doctor      # проверить конфиг + показать вкладки/строки, ничего не делая
+python -m sheet_agent bootstrap   # проставить заголовки схемы на все вкладки (+ _repos/_skills)
+python -m sheet_agent repos       # (пере)собрать справочную вкладку _repos + дропдауны B1
+python -m sheet_agent skills      # создать + засеять каталог _skills (seed-once)
+python -m sheet_agent once        # один цикл опроса и выход
+python -m sheet_agent run         # цикл супервизора (то, что крутит systemd)
 ```
 
-## Skills catalog (`_skills`) — run a playbook from the menu
+## Уровни автономии (`AUTONOMY`)
 
-Besides filing tasks, you can run a **catalog skill** against the active repo tab from
-the `🤖 Supervisor` ▸ **▶️ Запустить скилл** menu. The catalog lives on the `_skills`
-meta-tab (`Skill | Description | Prompt`), seeded once with a broad set of delivery
-playbooks spanning code quality, robustness, security, performance, docs, engineering
-hygiene and running-product UX (`autopilot`, `add-tests`, `harden`, `simplify`,
-`refresh-docs`, `security-pass`, `perf-pass`, `code-review`, `ux-loop-fix`, `pagespeed`,
-`accessibility`, `observability`, `ci-setup`, `type-coverage`, `lint-format`,
-`resilience-retries`, `input-validation`, `api-docs`, `onboarding-docs`, …) — prune what
-you don't want; your edits and the prompts you change
-are never clobbered (the seed runs only when the tab is empty). Picking a skill appends a
-`run_skill` intent to `_control`; the daemon looks up the skill's **Prompt** (column C)
-and runs it against the tab's repo through the same OpenSpec-gated agent path as a task,
-reporting `working`/`done`/`error` back into the `_control` row.
+- `spec` — только создать и провалидировать OpenSpec-изменение. Самый безопасный.
+  Реализует человек.
+- `code` — спека + реализация + тесты + коммит в ветку `agent/<change-id>`. Без
+  push/deploy.
+- `ship` — полный конвейер: спека → реализация → тесты → коммит → пуш → деплой
+  (`bash deploy/deploy.sh`, если есть). Максимальная автономия.
+- `gated` — двухстадийное ревью. Агент пишет спеку и паркует строку в `spec_ready`.
+  Человек читает `openspec/changes/<id>/` и ставит статус `approved`; демон
+  реализует и деплоит **одобренную** спеку. Безопасный дефолт для боевых репо — код
+  не пишется без явного «ок» от человека.
 
-## Autonomy levels (`AUTONOMY`)
+## Каталог скиллов (`_skills`) — запуск плейбука из меню
 
-- `spec` — only create & validate the OpenSpec change. Safest. A human implements.
-- `code` — spec + implement + tests + commit on `agent/<change-id>`. No push/deploy.
-- `ship` — full pipeline: spec → implement → tests → commit → push → deploy
-  (`bash deploy/deploy.sh` if present). Maximum autonomy.
-- `gated` — two-stage review. The agent writes the spec, then parks the row in
-  `spec_ready`. A human reads `openspec/changes/<id>/` and sets the status to
-  `approved`; the daemon then implements and ships the **approved** spec. The safe
-  default for prod-deploying repos — code is never written without a human OK.
+Кроме постановки задач, можно запустить **каталожный скилл** против активной вкладки
+репо из меню `🤖 Supervisor` ▸ **▶️ Запустить скилл**. Каталог живёт на мета-вкладке
+`_skills` (`Skill | Description | Prompt`) и засевается один раз широким набором
+плейбуков по качеству кода, надёжности, безопасности, производительности, документации,
+инженерной гигиене и UX работающего продукта (`autopilot`, `add-tests`, `harden`,
+`simplify`, `refresh-docs`, `security-pass`, `perf-pass`, `code-review`, `ux-loop-fix`,
+`pagespeed`, `accessibility`, `observability`, `ci-setup`, `type-coverage`,
+`lint-format`, `resilience-retries`, `input-validation`, `api-docs`, `onboarding-docs`,
+…) — лишнее удалите; ваши правки и изменённые промпты никогда не затираются (засев
+работает только когда вкладка пустая). Выбор скилла добавляет интент `run_skill` во
+вкладку `_control`; демон берёт **Prompt** (колонка C) и выполняет его против репо
+вкладки тем же OpenSpec-gated путём, что и обычную задачу, отчитываясь
+`working`/`done`/`error` обратно в строку `_control`.
 
-## Sharing repos with partners (`_friends`) — **Stage 1**
+## Шаринг репо партнёрам (`_friends`) — **Stage 1**
 
-Hand a business partner a *scoped* control plane: a separate Google file exposing
-only the repos you choose. From `🤖 Supervisor ▸ 📤 Поделиться репо` pick a recipient
-e-mail and one or more repos; the daemon mints a brand-new spreadsheet under the
-service account, shares it with you (`OWNER_EMAIL`) and the partner, seeds it with a
-bound tab per shared repo, and records the file in the **`_friends`** registry tab
-(`sheet_id | repos | recipient | autonomy | link`). A friend file defaults to
-`gated` autonomy (`FRIEND_DEFAULT_AUTONOMY`) — partner files a task, the agent writes
-the OpenSpec spec + branch and parks it for you to review and deploy; raise a trusted
-partner's file to `ship` by editing its `autonomy` cell in `_friends`.
+Можно выдать бизнес-партнёру *ограниченный* пульт: отдельный Google-файл, открывающий
+только выбранные вами репо. Из `🤖 Supervisor ▸ 📤 Поделиться репо` выберите e-mail
+получателя и одно/несколько репо; демон создаёт новую таблицу под сервис-аккаунтом,
+шарит её вам (`OWNER_EMAIL`) и партнёру, засевает по вкладке на каждое расшаренное
+репо и записывает файл в реестр **`_friends`** (`sheet_id | repos | recipient |
+autonomy | link`). Friend-файл по умолчанию `gated` (`FRIEND_DEFAULT_AUTONOMY`) —
+партнёр пишет задачу, агент пишет OpenSpec-спеку + ветку и паркует на ваше ревью и
+деплой; доверенному партнёру можно поднять файл до `ship`, отредактировав ячейку
+`autonomy` в `_friends`.
 
-> **Staging.** This is Stage 1: the registry, the share/mint flow and the per-sheet
-> policy model (repo allowlist + autonomy). Stage 2 wires the live multi-sheet poll
-> loop (the daemon also polling every registered friend file, enforcing its allowlist,
-> applying its autonomy, and ignoring any repo-creation intent from a friend file). A
-> freshly minted friend file has no bound Apps Script and no `_control` tab, so it
-> already cannot create repos. See `openspec/changes/add-friend-sheets/`.
+> **Стадийность.** Это Stage 1: реестр, флоу создания/шаринга и модель политики на
+> файл (allowlist репо + автономия). Stage 2 подключает живой мульти-листовой цикл
+> опроса (демон опрашивает и каждый зарегистрированный friend-файл, применяя его
+> allowlist и автономию, и игнорируя любой интент создания репо из friend-файла).
+> Свежесозданный friend-файл не имеет привязанного Apps Script и вкладки `_control`,
+> поэтому уже не может создавать репо. См. `openspec/changes/add-friend-sheets/`.
 
-## Concurrency
+## Параллелизм
 
-Agents for **distinct** repos run in parallel (up to `MAX_CONCURRENT_AGENTS`); two
-agents never run in the same working dir (they would race on git). A long task in
-one repo no longer blocks the others. The supervisor stays single-instance (file
-lock); only the per-repo agent dispatch is parallel.
+Агенты для **разных** репо работают параллельно (до `MAX_CONCURRENT_AGENTS`); два
+агента никогда не работают в одной рабочей папке (иначе гонка по git). Долгая задача
+в одном репо больше не блокирует остальные. Супервизор остаётся single-instance
+(file-lock); параллелен только диспатч агентов по репо.
 
-## Attempts & dead-lettering
+## Попытки и dead-lettering
 
-The hidden column `F (Tries)` counts dispatches. After `MAX_ATTEMPTS` the row is
-dead-lettered to `failed` so a poisoned or quota-starved task can't loop forever on
-the metered Agent SDK pool. Setting status `retry` (or `approved`) resets the counter.
-The column is hidden (daemon-only state); to re-run, set status `retry` rather than
-editing it. Tasks dispatch in sheet order — there is no priority.
+Скрытая колонка `F (Попытки)` считает запуски. После `MAX_ATTEMPTS` строка
+dead-letter-ится в `failed`, чтобы отравленная или зажатая по квоте задача не крутилась
+вечно на метрируемом пуле Agent SDK. Статус `retry` (или `approved`) сбрасывает
+счётчик. Колонка скрыта (состояние только демона); чтобы перезапустить — ставьте
+статус `retry`, а не редактируйте её. Задачи берутся в порядке строк — приоритета нет.
 
-## Robustness ("неубиваемость")
+## Неубиваемость
 
-- systemd `Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=0` (never gives
-  up), `loginctl enable-linger` (survives logout/reboot).
-- Every cycle and every task is exception-wrapped — one failure can't kill the loop.
-- Each agent runs in its own process with a hard `AGENT_TIMEOUT`; a hung agent is
-  killed, the row marked `failed`, the daemon continues.
-- Single-instance file lock — two daemons can't fight over the sheet.
-- Rows stuck in `working` after a crash are reclaimed to `queued` after a grace
-  period (`2 × AGENT_TIMEOUT`).
-- Sheets API calls retry with exponential backoff.
-- Raw agent output for every run is kept under `state/runs/` for forensics.
+- systemd `Restart=always`, `RestartSec=5`, `StartLimitIntervalSec=0` (никогда не
+  сдаётся), `loginctl enable-linger` (переживает логаут/перезагрузку).
+- Каждый цикл и каждая задача обёрнуты в обработку исключений — один сбой не валит цикл.
+- Каждый агент в своём процессе с жёстким `AGENT_TIMEOUT`; зависший агент убивается,
+  строка помечается `failed`, демон продолжает.
+- Single-instance file-lock — два демона не подерутся за таблицу.
+- Строки, застрявшие в `working` после краша, возвращаются в `queued` после
+  grace-периода (`2 × AGENT_TIMEOUT`).
+- Вызовы Sheets API ретраятся с экспоненциальным backoff.
+- Сырой вывод каждого запуска агента хранится в `state/runs/` для разбора полётов.
 
-## Dry-run without Google
+## Сухой прогон без Google
 
 ```bash
 SHEET_BACKEND=mock python -m sheet_agent once
 ```
-Uses a local JSON file (`state/mock_sheet.json`) that mimics the sheet — the path
-used by the test suite. Run tests with `./.venv/bin/python -m pytest -q`.
+Использует локальный JSON-файл (`state/mock_sheet.json`), имитирующий таблицу — тот же
+путь, что у тестов. Тесты: `./.venv/bin/python -m pytest -q`.
 
-## Note on `create_repo` (opinionated extra)
+## Про `create_repo` (авторская надстройка)
 
-The `create_repo` flow (`scripts/create_beelink_repo.sh` + the `create-beelink-repo`
-skill) is the author's own provisioning recipe: it names repos `beelink-<name>`,
-registers them against a private internal **deployer** API, scaffolds a Docker
-compose file and pushes to a fixed GitHub owner. It is included as a worked example
-of "no LLM in the irreversible path", but it is wired to a specific home-server
-setup — adapt `scripts/create_beelink_repo.sh` (or drop the feature) before using it
-elsewhere. The core harness (sheet → agent → OpenSpec → ship), the chat tab, the
-skills catalog and friend sheets are all infra-agnostic.
+Флоу `create_repo` (`scripts/create_beelink_repo.sh` + скилл `create-beelink-repo`) —
+это личный рецепт автора для провижининга: он называет репо `beelink-<имя>`,
+регистрирует их в приватном внутреннем **deployer**-API, генерирует docker-compose и
+пушит к фиксированному GitHub-владельцу. Включён как рабочий пример принципа «никакого
+LLM в необратимом пути», но завязан на конкретный home-server — адаптируйте
+`scripts/create_beelink_repo.sh` (или выпилите фичу) под себя. Ядро харнесса
+(таблица → агент → OpenSpec → ship), вкладка чата, каталог скиллов и friend-sheets —
+infra-agnostic.
 
-## License
+## Лицензия
 
-MIT — see [LICENSE](LICENSE).
+MIT — см. [LICENSE](LICENSE).
